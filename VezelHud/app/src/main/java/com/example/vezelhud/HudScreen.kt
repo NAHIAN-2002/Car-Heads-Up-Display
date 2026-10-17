@@ -16,6 +16,7 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.aspectRatio
@@ -79,7 +80,8 @@ private fun tempColor(v: Int, warn: Int, crit: Int) = when {
     else -> Fg
 }
 
-private fun activeAlert(d: HudData): String? = when {
+/** The text of the most serious active warning, or null. */
+fun activeAlert(d: HudData): String? = when {
     d.dctTempC >= Limits.DCT_CRIT -> "DCT TEMP HIGH"
     d.coolantC >= Limits.COOLANT_CRIT -> "COOLANT HIGH"
     d.oilC >= Limits.OIL_CRIT -> "OIL TEMP HIGH"
@@ -87,9 +89,30 @@ private fun activeAlert(d: HudData): String? = when {
     else -> null
 }
 
+/** Simple driving-style indicator from pedal position. */
+private fun ecoLabel(d: HudData): Pair<String, Color>? = when {
+    d.sport -> null
+    d.accelPct >= 75 -> "HARD" to Orange
+    d.accelPct <= 35 && d.speedKmh > 5 -> "ECO" to Green
+    else -> null
+}
+
+private fun gearHint(d: HudData): String? = when {
+    d.evMode -> null
+    d.rpm >= 5500 && d.gear < 7 -> "\u25B2 UP"
+    d.rpm in 1..1200 && d.gear > 1 && d.accelPct >= 60 -> "\u25BC DOWN"
+    else -> null
+}
+
 @Composable
-fun HudScreen(d: HudData, mirrored: Boolean, modifier: Modifier = Modifier) {
-    val alert = activeAlert(d)
+fun HudScreen(
+    d: HudData,
+    mirrored: Boolean,
+    layout: LayoutMode,
+    useMph: Boolean,
+    modifier: Modifier = Modifier,
+) {
+    val alert = if (d.live) activeAlert(d) else null
     val pulse by rememberInfiniteTransition(label = "pulse").animateFloat(
         initialValue = 0.3f,
         targetValue = 1f,
@@ -104,13 +127,13 @@ fun HudScreen(d: HudData, mirrored: Boolean, modifier: Modifier = Modifier) {
             .then(if (alert != null) Modifier.border(4.dp, Alert.copy(alpha = pulse)) else Modifier)
             .padding(horizontal = 24.dp, vertical = 16.dp),
     ) {
-        Row(Modifier.fillMaxSize(), verticalAlignment = Alignment.CenterVertically) {
-            Column(Modifier.weight(1f), horizontalAlignment = Alignment.CenterHorizontally) {
-                RpmGauge(d.rpm, pulse, Modifier.fillMaxWidth())
-                PedalBars(d.accelPct, d.brakePct, Modifier.fillMaxWidth().padding(top = 6.dp))
+        BoxWithConstraints(Modifier.fillMaxSize()) {
+            val portrait = maxHeight > maxWidth
+            when {
+                layout == LayoutMode.MINIMAL -> MinimalLayout(d, useMph)
+                portrait -> PortraitLayout(d, pulse, useMph)
+                else -> LandscapeLayout(d, pulse, useMph)
             }
-            CenterColumn(d, Modifier.weight(0.9f))
-            RightColumn(d, Modifier.weight(1f).padding(start = 20.dp))
         }
         if (alert != null) {
             Text(
@@ -125,6 +148,56 @@ fun HudScreen(d: HudData, mirrored: Boolean, modifier: Modifier = Modifier) {
                     .padding(horizontal = 14.dp, vertical = 3.dp),
             )
         }
+        if (!d.live) {
+            Box(
+                Modifier.fillMaxSize().background(Color.Black.copy(alpha = 0.9f)),
+                contentAlignment = Alignment.Center,
+            ) {
+                Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                    Text("NO DATA", color = Alert, fontSize = 48.sp, fontWeight = FontWeight.Bold, letterSpacing = 4.sp)
+                    Text("Waiting for the car connection", color = Dim, fontSize = 14.sp)
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun LandscapeLayout(d: HudData, pulse: Float, useMph: Boolean) {
+    Row(Modifier.fillMaxSize(), verticalAlignment = Alignment.CenterVertically) {
+        Column(Modifier.weight(1f), horizontalAlignment = Alignment.CenterHorizontally) {
+            RpmGauge(d.rpm, pulse, Modifier.fillMaxWidth())
+            PedalBars(d.accelPct, d.brakePct, Modifier.fillMaxWidth().padding(top = 6.dp))
+        }
+        CenterColumn(d, useMph, Modifier.weight(0.9f))
+        RightColumn(d, Modifier.weight(1f).padding(start = 20.dp))
+    }
+}
+
+@Composable
+private fun PortraitLayout(d: HudData, pulse: Float, useMph: Boolean) {
+    Column(
+        Modifier.fillMaxSize(),
+        horizontalAlignment = Alignment.CenterHorizontally,
+        verticalArrangement = Arrangement.spacedBy(6.dp),
+    ) {
+        Column(
+            Modifier.weight(1.1f).fillMaxWidth(),
+            horizontalAlignment = Alignment.CenterHorizontally,
+            verticalArrangement = Arrangement.Center,
+        ) {
+            RpmGauge(d.rpm, pulse, Modifier.fillMaxWidth(0.85f))
+            PedalBars(d.accelPct, d.brakePct, Modifier.fillMaxWidth().padding(top = 4.dp))
+        }
+        CenterColumn(d, useMph, Modifier.weight(0.8f))
+        RightColumn(d, Modifier.weight(1.2f).fillMaxWidth())
+    }
+}
+
+@Composable
+private fun MinimalLayout(d: HudData, useMph: Boolean) {
+    Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+        CenterColumn(d, useMph, Modifier, big = true)
     }
 }
 
@@ -203,9 +276,12 @@ private fun RpmGauge(rpm: Int, pulse: Float, modifier: Modifier = Modifier) {
 }
 
 @Composable
-private fun CenterColumn(d: HudData, modifier: Modifier = Modifier) {
+private fun CenterColumn(d: HudData, useMph: Boolean, modifier: Modifier = Modifier, big: Boolean = false) {
     val modeColor by animateColorAsState(d.mode.color, tween(500), label = "modeColor")
-    val speed by animateFloatAsState(d.speedKmh.toFloat(), spring(stiffness = 300f), label = "speed")
+    val shown = if (useMph) d.speedKmh * 0.621371f else d.speedKmh.toFloat()
+    val speed by animateFloatAsState(shown, spring(stiffness = 300f), label = "speed")
+    val eco = ecoLabel(d)
+    val hint = gearHint(d)
     Column(modifier, horizontalAlignment = Alignment.CenterHorizontally) {
         Crossfade(d.mode, animationSpec = tween(300), label = "badge") { m ->
             Text(
@@ -215,8 +291,16 @@ private fun CenterColumn(d: HudData, modifier: Modifier = Modifier) {
                     .padding(horizontal = 16.dp, vertical = 1.dp),
             )
         }
-        Text(speed.roundToInt().toString(), color = modeColor, fontSize = 110.sp, fontWeight = FontWeight.Bold)
-        Text("KM/H", color = Dim, fontSize = 13.sp, letterSpacing = 3.sp)
+        Text(
+            speed.roundToInt().toString(),
+            color = modeColor,
+            fontSize = if (big) 170.sp else 110.sp,
+            fontWeight = FontWeight.Bold,
+        )
+        Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+            Text(if (useMph) "MPH" else "KM/H", color = Dim, fontSize = 13.sp, letterSpacing = 3.sp)
+            Text(eco?.first ?: "", color = eco?.second ?: Dim, fontSize = 13.sp, fontWeight = FontWeight.Bold, letterSpacing = 2.sp)
+        }
         Row(
             Modifier.padding(top = 8.dp),
             horizontalArrangement = Arrangement.spacedBy(8.dp),
@@ -224,6 +308,7 @@ private fun CenterColumn(d: HudData, modifier: Modifier = Modifier) {
         ) {
             for (g in 1..7) GearPip(g, g == d.gear, modeColor)
         }
+        Text(hint ?: " ", color = Orange, fontSize = 13.sp, fontWeight = FontWeight.Bold, letterSpacing = 2.sp)
     }
 }
 
@@ -304,16 +389,18 @@ private fun PowerBar(kw: Int) {
     }
 }
 
-/** Scale 40..140 C: green to 100, amber to 120, red above. */
+/** Scale 40..140 C: green up to the warning limit, amber up to critical, red above. */
 @Composable
 private fun DctBar(temp: Int) {
     val t by animateFloatAsState(temp.toFloat(), tween(300), label = "dct")
     Canvas(Modifier.fillMaxWidth().height(8.dp)) {
         val w = size.width
         val h = size.height
-        drawRect(Color(0xFF1F8A68), Offset(0f, 0f), Size(w * 0.6f, h))
-        drawRect(Color(0xFFB9801A), Offset(w * 0.6f, 0f), Size(w * 0.2f, h))
-        drawRect(Color(0xFFA8261F), Offset(w * 0.8f, 0f), Size(w * 0.2f, h))
+        val warn = ((Limits.DCT_WARN - 40) / 100f).coerceIn(0.05f, 0.95f)
+        val crit = ((Limits.DCT_CRIT - 40) / 100f).coerceIn(warn, 0.98f)
+        drawRect(Color(0xFF1F8A68), Offset(0f, 0f), Size(w * warn, h))
+        drawRect(Color(0xFFB9801A), Offset(w * warn, 0f), Size(w * (crit - warn), h))
+        drawRect(Color(0xFFA8261F), Offset(w * crit, 0f), Size(w * (1f - crit), h))
         val x = w * ((t - 40) / 100f).coerceIn(0f, 1f)
         drawRect(Fg, Offset(x - 2.dp.toPx(), -4.dp.toPx()), Size(4.dp.toPx(), h + 8.dp.toPx()))
     }

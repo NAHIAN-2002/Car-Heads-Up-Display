@@ -15,6 +15,7 @@ enum class DriveMode(val label: String, val color: Color) {
 
 /** One snapshot of everything the HUD shows. Later, the real OBD2 layer produces these too. */
 data class HudData(
+    val live: Boolean = true,  // false = no data from the car (connection lost)
     val rpm: Int = 0,
     val speedKmh: Int = 0,
     val gear: Int = 1,
@@ -37,17 +38,17 @@ data class HudData(
         }
 }
 
-/** Tune these to your car. */
+/** Warning limits. Editable from the Settings screen (see AppSettings.applyLimits). */
 object Limits {
     const val RPM_MAX = 7000
-    const val DCT_WARN = 100
-    const val DCT_CRIT = 120
-    const val COOLANT_WARN = 105
-    const val COOLANT_CRIT = 112
-    const val OIL_WARN = 130
-    const val OIL_CRIT = 150
-    const val BATT_TEMP_WARN = 45
-    const val BATT_TEMP_CRIT = 55
+    var DCT_WARN = 100
+    var DCT_CRIT = 120
+    var COOLANT_WARN = 105
+    var COOLANT_CRIT = 112
+    var OIL_WARN = 130
+    var OIL_CRIT = 150
+    var BATT_TEMP_WARN = 45
+    var BATT_TEMP_CRIT = 55
 }
 
 /** Fake data source so you can build and test the UI without the car. */
@@ -58,11 +59,19 @@ class Simulator {
     @Volatile
     var forceSport = false
 
+    @Volatile
+    var forceOffline = false
+
     fun stream(): Flow<HudData> = flow {
         var t = 0.0
         var dct = 80.0
         while (true) {
             t += 0.1
+            if (forceOffline) {
+                emit(HudData(live = false))
+                delay(100)
+                continue
+            }
             val sport = forceSport
             val speed = (55 + 45 * sin(t / 5)).toInt()
             val ev = !sport && speed < 25
